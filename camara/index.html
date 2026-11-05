@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fotos del palet</title>
+<style>
+  :root {
+    --azul: #1F3864; --suave: #6E7A8F; --texto: #232935; --borde: #DBE2EE;
+    --fondo: #F4F6FA; --blanco: #fff; --ok: #1E6B34; --okf: #E2F0D9; --mal: #9C2A1E; --malf: #FBE3DF;
+    --T4: #D9952B; --T5: #C65A3A; --T6: #A42A32;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.4 "Segoe UI", system-ui, sans-serif; color: var(--texto); background: var(--fondo); }
+  header { background: var(--azul); color: var(--blanco); padding: 12px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 20px; margin: 0; letter-spacing: .5px; }
+  .tramo { padding: 3px 12px; border-radius: 4px; font-weight: 700; color: #fff; }
+  .itrn { opacity: .85; font-size: 14px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; padding: 16px 20px; max-width: 1400px; margin: auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--blanco); border: 1px solid var(--borde); border-radius: 8px; padding: 14px; }
+  video { width: 100%; max-height: 72vh; background: #111; border-radius: 6px; display: block; }
+  .barra { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  select { font: inherit; padding: 6px 8px; border: 1px solid var(--borde); border-radius: 6px; min-width: 240px; }
+  button { font: inherit; border: 0; border-radius: 6px; padding: 9px 16px; cursor: pointer; background: var(--borde); color: var(--texto); }
+  button.principal { background: var(--azul); color: #fff; font-weight: 700; font-size: 17px; padding: 12px 26px; }
+  button:disabled { opacity: .45; cursor: default; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .6px; color: var(--suave); margin: 0 0 8px; }
+  .aviso { border-radius: 6px; padding: 10px 12px; margin: 0 0 12px; display: none; }
+  .aviso.mal { display: block; background: var(--malf); color: var(--mal); }
+  .aviso.ok { display: block; background: var(--okf); color: var(--ok); }
+  .aviso.info { display: block; background: #EEF3FB; color: var(--azul); }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { padding: 6px 0; border-bottom: 1px solid var(--borde); font-variant-numeric: tabular-nums; }
+  .mini { max-width: 100%; border-radius: 4px; margin-top: 10px; display: none; }
+  .gris { color: var(--suave); font-size: 13px; }
+  .destino { word-break: break-all; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="lp">LP</h1>
+  <span class="tramo" id="tramo"></span>
+  <span class="itrn" id="itrn"></span>
+</header>
+<main>
+  <section class="panel">
+    <div id="aviso" class="aviso"></div>
+    <video id="video" autoplay playsinline muted></video>
+    <div class="barra">
+      <button id="foto" class="principal" disabled>📷 Hacer foto</button>
+      <select id="camaras" aria-label="Cámara"></select>
+    </div>
+  </section>
+  <aside class="panel">
+    <h2>Dónde se guardan</h2>
+    <p class="destino" id="destino">—</p>
+    <div class="barra" style="margin-top:0">
+      <button id="carpeta">Elegir carpeta de OneDrive</button>
+    </div>
+    <p class="gris">Elige una vez la carpeta compartida donde están las carpetas de los ITRN
+      (o la del propio ITRN). Este PC la recuerda.</p>
+    <h2 style="margin-top:18px">Fotos de este LP</h2>
+    <ul id="lista"><li class="gris">Ninguna todavía</li></ul>
+    <img id="ultima" class="mini" alt="Última foto">
+  </aside>
+</main>
+<script>
+"use strict";
+// Fotos de palets degradados: se abre desde el 📷 del informe General Transfer view.
+// Parametros: c = carpeta del ITRN, lp = License plate, t = tramo (T4/Industry/Dump).
+// Las fotos se guardan como LP-n.jpg en la carpeta del ITRN (File System Access de
+// Edge/Chrome); si no se puede, se descargan con ese nombre para arrastrarlas a OneDrive.
+
+const q = new URLSearchParams(location.search);
+const CARPETA = (q.get("c") || "").trim();
+const LP = (q.get("lp") || "").trim().replace(/[^\w.-]/g, "");
+const TRAMOS = { T4: ["T4 / TRADE", "var(--T4)"], INDUSTRY: ["T5 / INDUSTRY", "var(--T5)"],
+                 T5: ["T5 / INDUSTRY", "var(--T5)"], DUMP: ["T6 / DUMP", "var(--T6)"], T6: ["T6 / DUMP", "var(--T6)"] };
+const TRAMO = TRAMOS[(q.get("t") || "").trim().toUpperCase()] || null;
+const FORZAR_DESCARGA = q.get("modo") === "descarga";
+
+const $ = (id) => document.getElementById(id);
+const video = $("video"), selCam = $("camaras"), btnFoto = $("foto");
+let flujo = null, raiz = null, guardando = false;
+
+function avisar(texto, tipo) {
+  const a = $("aviso");
+  a.textContent = texto || "";
+  a.className = "aviso" + (texto ? " " + tipo : "");
+  document.title = (tipo === "mal" ? "ERROR: " : "") + (texto || "Fotos del palet");
+}
+
+// ---------- cabecera ----------
+$("lp").textContent = LP ? "LP " + LP : "Falta el LP";
+$("itrn").textContent = CARPETA || "Falta la carpeta del ITRN";
+if (TRAMO) { $("tramo").textContent = TRAMO[0]; $("tramo").style.background = TRAMO[1]; }
+else $("tramo").style.display = "none";
+
+// ---------- carpeta recordada (IndexedDB) ----------
+function bd() {
+  return new Promise((ok, mal) => {
+    const r = indexedDB.open("fotos-palets", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => mal(r.error);
+  });
+}
+async function bdGet(k) {
+  const d = await bd();
+  return new Promise((ok) => { const r = d.transaction("kv").objectStore("kv").get(k); r.onsuccess = () => ok(r.result); r.onerror = () => ok(null); });
+}
+async function bdSet(k, v) {
+  const d = await bd();
+  return new Promise((ok) => { const t = d.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = ok; t.onerror = ok; });
+}
+
+const puedeCarpeta = "showDirectoryPicker" in window && !FORZAR_DESCARGA;
+
+async function permiso(h, pedir) {
+  const o = { mode: "readwrite" };
+  if ((await h.queryPermission(o)) === "granted") return true;
+  return pedir && (await h.requestPermission(o)) === "granted";
+}
+
+// carpeta del ITRN: la elegida, si ya es esa; si no, su subcarpeta con ese nombre
+async function carpetaITRN(pedir) {
+  if (!raiz || !(await permiso(raiz, pedir))) return null;
+  if (raiz.name.toLowerCase() === CARPETA.toLowerCase()) return raiz;
+  try { return await raiz.getDirectoryHandle(CARPETA); }
+  catch (e) { return undefined; }            // la elegida no contiene la del ITRN
+}
+
+async function pintarDestino() {
+  if (!puedeCarpeta) {
+    $("destino").textContent = "Este navegador no deja guardar en carpetas: las fotos se descargan.";
+    $("carpeta").style.display = "none";
+    return;
+  }
+  if (!raiz) { $("destino").textContent = "Sin carpeta elegida: pulsa «Elegir carpeta de OneDrive»."; return; }
+  const ok = await permiso(raiz, false);
+  $("destino").textContent = raiz.name + (raiz.name.toLowerCase() === CARPETA.toLowerCase() ? "" : " › " + CARPETA) +
+                             (ok ? "" : "  (se pedirá permiso al hacer la foto)");
+}
+
+$("carpeta").onclick = async () => {
+  try {
+    raiz = await window.showDirectoryPicker({ id: "onedrive-itrn", mode: "readwrite" });
+    await bdSet("raiz", raiz);
+    const dir = await carpetaITRN(true);
+    if (dir === undefined) avisar("En «" + raiz.name + "» no está la carpeta «" + CARPETA + "». Elige la carpeta compartida que la contiene, o la del ITRN.", "mal");
+    else avisar("Carpeta lista.", "ok");
+    await pintarDestino();
+    await listar();
+  } catch (e) { if (e.name !== "AbortError") avisar("No se pudo usar la carpeta: " + e.message, "mal"); }
+};
+
+// ---------- fotos existentes y siguiente numero ----------
+const reFoto = new RegExp("^" + LP.replace(/[.]/g, "\\.") + "-(\\d+)\\.jpe?g$", "i");
+
+async function fotosEn(dir) {
+  const n = [];
+  for await (const [nombre, h] of dir.entries()) {
+    const m = h.kind === "file" && nombre.match(reFoto);
+    if (m) n.push([+m[1], nombre]);
+  }
+  return n.sort((a, b) => a[0] - b[0]);
+}
+
+function claveContador() { return "n|" + CARPETA + "|" + LP; }
+
+async function listar() {
+  let nombres = [];
+  const dir = puedeCarpeta ? await carpetaITRN(false) : null;
+  if (dir) nombres = (await fotosEn(dir)).map((x) => x[1]);
+  else {
+    const n = +(localStorage.getItem(claveContador()) || 0);
+    for (let i = 1; i <= n; i++) nombres.push(LP + "-" + i + ".jpg (descargada)");
+  }
+  $("lista").innerHTML = nombres.length ? "" : '<li class="gris">Ninguna todavía</li>';
+  for (const t of nombres) { const li = document.createElement("li"); li.textContent = t; $("lista").appendChild(li); }
+  return nombres;
+}
+
+// ---------- camaras ----------
+async function abrirCamara(id) {
+  if (flujo) flujo.getTracks().forEach((t) => t.stop());
+  btnFoto.disabled = true;
+  const video_ = { width: { ideal: 4096 }, height: { ideal: 2160 } };
+  if (id) video_.deviceId = { exact: id };
+  flujo = await navigator.mediaDevices.getUserMedia({ video: video_, audio: false });
+  video.srcObject = flujo;
+  await video.play().catch(() => {});
+  const ajustes = flujo.getVideoTracks()[0].getSettings();
+  if (ajustes.deviceId) localStorage.setItem("camara", ajustes.deviceId);
+  btnFoto.disabled = !LP || !CARPETA;
+  return ajustes;
+}
+
+async function listarCamaras(elegida) {
+  const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  selCam.innerHTML = "";
+  cams.forEach((c, i) => {
+    const o = document.createElement("option");
+    o.value = c.deviceId;
+    o.textContent = c.label || "Cámara " + (i + 1);
+    selCam.appendChild(o);
+  });
+  if (elegida) selCam.value = elegida;
+  return cams;
+}
+
+selCam.onchange = async () => {
+  try { await abrirCamara(selCam.value); avisar("", ""); }
+  catch (e) { avisar("No se pudo abrir esa cámara: " + e.message, "mal"); }
+};
+
+// ---------- hacer la foto ----------
+function capturar() {
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return Promise.reject(new Error("la cámara aún no da imagen"));
+  const lienzo = document.createElement("canvas");
+  lienzo.width = w; lienzo.height = h;
+  lienzo.getContext("2d").drawImage(video, 0, 0, w, h);
+  return new Promise((ok, mal) => lienzo.toBlob((b) => (b ? ok(b) : mal(new Error("no se pudo crear el JPG"))), "image/jpeg", 0.92));
+}
+
+function descargar(blob, nombre) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = nombre;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+btnFoto.onclick = async () => {
+  if (guardando) return;
+  guardando = true; btnFoto.disabled = true;
+  try {
+    const blob = await capturar();
+    $("ultima").src = URL.createObjectURL(blob); $("ultima").style.display = "block";
+    const dir = puedeCarpeta ? await carpetaITRN(true) : null;
+    let nombre;
+    if (dir) {
+      const hechas = await fotosEn(dir);
+      nombre = LP + "-" + ((hechas.length ? hechas[hechas.length - 1][0] : 0) + 1) + ".jpg";
+      const h = await dir.getFileHandle(nombre, { create: true });
+      const w = await h.createWritable();
+      await w.write(blob); await w.close();
+      avisar("Guardada " + nombre + " en " + dir.name + ". OneDrive la subirá sola.", "ok");
+    } else {
+      const n = +(localStorage.getItem(claveContador()) || 0) + 1;
+      localStorage.setItem(claveContador(), n);
+      nombre = LP + "-" + n + ".jpg";
+      descargar(blob, nombre);
+      avisar(puedeCarpeta && dir === undefined
+        ? "No encuentro la carpeta «" + CARPETA + "». Se ha descargado " + nombre + ": arrástrala a esa carpeta en OneDrive, o elige la carpeta correcta."
+        : "Descargada " + nombre + ". Arrástrala a la carpeta «" + CARPETA + "» en OneDrive.", dir === undefined ? "mal" : "info");
+    }
+    window.ultimaFoto = { nombre, bytes: blob.size };
+    await listar();
+  } catch (e) {
+    avisar("No se pudo hacer la foto: " + e.message, "mal");
+  } finally {
+    guardando = false; btnFoto.disabled = !flujo;
+  }
+};
+
+// ---------- arranque ----------
+(async () => {
+  if (!LP || !CARPETA) avisar("Abre esta página desde el 📷 de una línea del informe: falta el LP o la carpeta del ITRN.", "mal");
+  if (puedeCarpeta) raiz = (await bdGet("raiz").catch(() => null)) || null;
+  await pintarDestino();
+  await listar();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    avisar("Este navegador no da acceso a la cámara. Ábrelo en Edge o Chrome.", "mal"); return;
+  }
+  try {
+    const recordada = localStorage.getItem("camara");
+    let ajustes;
+    try { ajustes = await abrirCamara(recordada); }
+    catch (e) { if (recordada && (e.name === "OverconstrainedError" || e.name === "NotFoundError")) ajustes = await abrirCamara(null); else throw e; }
+    const cams = await listarCamaras(ajustes.deviceId);
+    if (!LP || !CARPETA) btnFoto.disabled = true;
+    else if (!$("aviso").textContent) avisar("", "");
+    document.title = "LISTO " + cams.length + " camara(s) " + (ajustes.width || 0) + "x" + (ajustes.height || 0);
+    // ?prueba=1: hace dos fotos solas (pruebas automaticas sin pantalla)
+    if (q.get("prueba") === "1") {
+      await new Promise((r) => setTimeout(r, 800));
+      await btnFoto.onclick(); await btnFoto.onclick();
+      document.title = "PRUEBA " + document.title.replace(/^ERROR: /, "") + " | ultima " + JSON.stringify(window.ultimaFoto) +
+                       " | lista " + [...$("lista").children].map((li) => li.textContent).join(",");
+    }
+  } catch (e) {
+    if (e.name === "NotAllowedError") avisar("No hay permiso para usar la cámara. Pulsa el icono de la cámara en la barra de direcciones y permítelo.", "mal");
+    else if (e.name === "NotFoundError") avisar("Este PC no tiene ninguna cámara conectada.", "mal");
+    else avisar("No se pudo abrir la cámara: " + e.message, "mal");
+  }
+})();
+</script>
+</body>
+</html>
