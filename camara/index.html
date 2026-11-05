@@ -183,18 +183,44 @@ async function listar() {
 }
 
 // ---------- camaras ----------
+// Algunas cámaras (sobre todo 4K por USB 3) no arrancan a la resolución máxima o no
+// dan imagen: se prueba de mayor a menor y se acepta la primera que pinte un fotograma.
+const RESOLUCIONES = [[4096, 2160], [1920, 1080], [1280, 720], null];
+
+function hayImagen(ms) {
+  return new Promise((ok) => {
+    if (video.videoWidth > 0) return ok(true);
+    const t = setTimeout(() => ok(video.videoWidth > 0), ms);
+    video.addEventListener("loadeddata", () => { clearTimeout(t); ok(video.videoWidth > 0); }, { once: true });
+  });
+}
+
 async function abrirCamara(id) {
-  if (flujo) flujo.getTracks().forEach((t) => t.stop());
   btnFoto.disabled = true;
-  const video_ = { width: { ideal: 4096 }, height: { ideal: 2160 } };
-  if (id) video_.deviceId = { exact: id };
-  flujo = await navigator.mediaDevices.getUserMedia({ video: video_, audio: false });
-  video.srcObject = flujo;
-  await video.play().catch(() => {});
-  const ajustes = flujo.getVideoTracks()[0].getSettings();
-  if (ajustes.deviceId) localStorage.setItem("camara", ajustes.deviceId);
-  btnFoto.disabled = !LP || !CARPETA;
-  return ajustes;
+  let ultimoError = null;
+  for (const r of RESOLUCIONES) {
+    if (flujo) { flujo.getTracks().forEach((t) => t.stop()); flujo = null; }
+    const v = r ? { width: { ideal: r[0] }, height: { ideal: r[1] } } : {};
+    if (id) v.deviceId = { exact: id };
+    try {
+      flujo = await navigator.mediaDevices.getUserMedia({ video: v, audio: false });
+    } catch (e) {
+      ultimoError = e;
+      if (e.name === "NotAllowedError" || e.name === "NotFoundError") throw e;
+      continue;                                   // NotReadable / Overconstrained: probar menos
+    }
+    video.srcObject = flujo;
+    video.play().catch(() => {});
+    if (await hayImagen(4000)) {
+      const ajustes = flujo.getVideoTracks()[0].getSettings();
+      if (ajustes.deviceId) localStorage.setItem("camara", ajustes.deviceId);
+      btnFoto.disabled = !LP || !CARPETA;
+      return ajustes;
+    }
+    ultimoError = new Error("la cámara no da imagen");
+  }
+  if (flujo) { flujo.getTracks().forEach((t) => t.stop()); flujo = null; }
+  throw ultimoError || new Error("la cámara no responde");
 }
 
 async function listarCamaras(elegida) {
@@ -212,7 +238,7 @@ async function listarCamaras(elegida) {
 
 selCam.onchange = async () => {
   try { await abrirCamara(selCam.value); avisar("", ""); }
-  catch (e) { avisar("No se pudo abrir esa cámara: " + e.message, "mal"); }
+  catch (e) { avisar("No se pudo abrir esa cámara (" + (selCam.selectedOptions[0] || {}).textContent + "): " + e.message + ". Prueba con otra o desconéctala y vuelve a conectarla.", "mal"); }
 };
 
 // ---------- hacer la foto ----------
