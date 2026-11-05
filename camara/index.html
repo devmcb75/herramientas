@@ -35,6 +35,10 @@
   .mini { max-width: 100%; border-radius: 4px; margin-top: 10px; display: none; }
   .gris { color: var(--suave); font-size: 13px; }
   .destino { word-break: break-all; }
+  #resumen li { display: flex; justify-content: space-between; gap: 8px; cursor: pointer; }
+  #resumen li:hover { background: var(--fondo); }
+  #resumen li.sinfoto { color: var(--mal); font-weight: 700; }
+  #resumen .t { color: #fff; border-radius: 3px; padding: 0 6px; font-size: 12px; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -63,6 +67,10 @@
     <h2 style="margin-top:18px">Fotos de este LP</h2>
     <ul id="lista"><li class="gris">Ninguna todavía</li></ul>
     <img id="ultima" class="mini" alt="Última foto">
+    <h2 style="margin-top:18px">Resumen del ITRN</h2>
+    <div class="barra" style="margin-top:0"><button id="verResumen">Ver LP degradados y sus fotos</button></div>
+    <p class="gris" id="resumenInfo">Lee el informe de la carpeta del ITRN y marca en rojo los palets degradados sin foto.</p>
+    <ul id="resumen"></ul>
   </aside>
 </main>
 <script>
@@ -292,6 +300,74 @@ btnFoto.onclick = async () => {
   }
 };
 
+// ---------- resumen del ITRN: LP degradados del informe y sus fotos ----------
+// El informe guarda en la columna oculta AL (indice 37) el tramo calculado de cada
+// linea: "T4", "Industry" o "Dump". El LP esta en la columna A.
+const COL_TRAMO_INFORME = 37;
+const PESO = { T4: 1, INDUSTRY: 2, DUMP: 3 };
+const ETIQUETA = { T4: ["T4", "var(--T4)"], INDUSTRY: ["T5", "var(--T5)"], DUMP: ["T6", "var(--T6)"] };
+
+function cargarSheetJS() {
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((ok, mal) => {
+    const sc = document.createElement("script");
+    sc.src = "https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js";
+    sc.onload = ok; sc.onerror = () => mal(new Error("no se pudo cargar el lector de Excel"));
+    document.head.appendChild(sc);
+  });
+}
+
+// devuelve [[lp, tramo, nFotos], ...] con el peor tramo de cada LP
+function degradados(buffer, nombresFotos) {
+  const libro = XLSX.read(buffer, { type: "array" });
+  const filas = XLSX.utils.sheet_to_json(libro.Sheets[libro.SheetNames[0]], { header: 1, raw: false, defval: "" });
+  const lps = new Map();
+  for (const f of filas) {
+    const lp = String(f[0] || "").trim(), t = String(f[COL_TRAMO_INFORME] || "").trim().toUpperCase();
+    if (!/^\d{6,}$/.test(lp) || !PESO[t]) continue;
+    if (!lps.has(lp) || PESO[t] > PESO[lps.get(lp)]) lps.set(lp, t);
+  }
+  const fotos = {};
+  for (const n of nombresFotos) { const m = n.match(/^(\d+)-\d+\.jpe?g$/i); if (m) fotos[m[1]] = (fotos[m[1]] || 0) + 1; }
+  return [...lps].map(([lp, t]) => [lp, t, fotos[lp] || 0]);
+}
+
+function pintarResumen(lista) {
+  const ul = $("resumen"); ul.innerHTML = "";
+  const sin = lista.filter((x) => !x[2]).length;
+  $("resumenInfo").textContent = lista.length
+    ? lista.length + " LP degradados · " + (sin ? sin + " sin foto" : "todos con foto")
+    : "No hay ningún LP degradado en el informe guardado.";
+  for (const [lp, t, n] of lista) {
+    const li = document.createElement("li");
+    if (!n) li.className = "sinfoto";
+    li.innerHTML = '<span>' + lp + ' <span class="t" style="background:' + ETIQUETA[t][1] + '">' + ETIQUETA[t][0] +
+                   '</span></span><span>' + (n ? n + " foto" + (n > 1 ? "s" : "") : "sin foto") + '</span>';
+    li.title = "Abrir las fotos de este LP";
+    li.onclick = () => { const u = new URL(location.href); u.searchParams.set("lp", lp); u.searchParams.set("t", t); location.href = u.href; };
+    ul.appendChild(li);
+  }
+  return sin;
+}
+
+$("verResumen").onclick = async () => {
+  try {
+    $("resumenInfo").textContent = "Leyendo el informe…";
+    const dir = puedeCarpeta ? await carpetaITRN(true) : null;
+    if (!dir) { $("resumenInfo").textContent = "Elige antes la carpeta de OneDrive: el resumen lee el informe de la carpeta del ITRN."; return; }
+    const nombres = [], libros = [];
+    for await (const [n, h] of dir.entries()) {
+      if (h.kind !== "file") continue;
+      nombres.push(n);
+      if (/\.xlsx$/i.test(n) && !n.startsWith("~$")) libros.push([n, h]);
+    }
+    const libro = libros.find(([n]) => n.toLowerCase() === (CARPETA + ".xlsx").toLowerCase()) || libros[0];
+    if (!libro) { $("resumenInfo").textContent = "No hay ningún informe .xlsx en la carpeta del ITRN."; return; }
+    await cargarSheetJS();
+    pintarResumen(degradados(await (await libro[1].getFile()).arrayBuffer(), nombres));
+  } catch (e) { $("resumenInfo").textContent = "No se pudo leer el informe: " + e.message; }
+};
+
 // ---------- arranque ----------
 (async () => {
   if (!LP || !CARPETA) avisar("Abre esta página desde el 📷 de una línea del informe: falta el LP o la carpeta del ITRN.", "mal");
@@ -310,6 +386,11 @@ btnFoto.onclick = async () => {
     if (!LP || !CARPETA) btnFoto.disabled = true;
     else if (!$("aviso").textContent) avisar("", "");
     document.title = "LISTO " + cams.length + " camara(s) " + (ajustes.width || 0) + "x" + (ajustes.height || 0);
+    if (q.get("prueba") === "resumen") {
+      await cargarSheetJS();
+      const sin = pintarResumen(degradados(await (await fetch("informe.xlsx")).arrayBuffer(), ["105812755-1.jpg", "105812755-2.jpg"]));
+      document.title = "RESUMEN " + $("resumenInfo").textContent + " | " + [...$("resumen").children].map((li) => li.textContent).join(" ; ");
+    }
     // ?prueba=1: hace dos fotos solas (pruebas automaticas sin pantalla)
     if (q.get("prueba") === "1") {
       await new Promise((r) => setTimeout(r, 800));
