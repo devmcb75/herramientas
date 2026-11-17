@@ -82,6 +82,8 @@
 
 const q = new URLSearchParams(location.search);
 const CARPETA = (q.get("c") || "").trim();
+// codigo del ITRN para el nombre de las fotos: "ITRN-000100576 PT BOA" -> "ITRN-000100576"
+const ITRN = CARPETA.split(/\s+/)[0].replace(/[^\w.-]/g, "");
 const LP = (q.get("lp") || "").trim().replace(/[^\w.-]/g, "");
 const TRAMOS = { T4: ["T4 / TRADE", "var(--T4)"], INDUSTRY: ["T5 / INDUSTRY", "var(--T5)"],
                  T5: ["T5 / INDUSTRY", "var(--T5)"], DUMP: ["T6 / DUMP", "var(--T6)"], T6: ["T6 / DUMP", "var(--T6)"] };
@@ -213,7 +215,9 @@ $("carpeta").onclick = async () => {
 };
 
 // ---------- fotos existentes y siguiente numero ----------
-const reFoto = new RegExp("^" + LP.replace(/[.]/g, "\\.") + "-(\\d+)\\.jpe?g$", "i");
+// ITRN-LP-n.jpg (y LP-n.jpg, el nombre de antes, para no pisar ninguna)
+const reFoto = new RegExp("^(?:" + ITRN.replace(/[.]/g, "\\.") + "-)?" + LP.replace(/[.]/g, "\\.") + "-(\\d+)\\.jpe?g$", "i");
+const nombreFoto = (n) => (ITRN ? ITRN + "-" : "") + LP + "-" + n + ".jpg";
 
 async function fotosEn(dir) {
   const n = [];
@@ -232,7 +236,7 @@ async function listar() {
   if (dir) nombres = (await fotosEn(dir)).map((x) => x[1]);
   else {
     const n = +(localStorage.getItem(claveContador()) || 0);
-    for (let i = 1; i <= n; i++) nombres.push(LP + "-" + i + ".jpg (descargada)");
+    for (let i = 1; i <= n; i++) nombres.push(nombreFoto(i) + " (descargada)");
   }
   $("lista").innerHTML = nombres.length ? "" : '<li class="gris">Ninguna todavía</li>';
   for (const t of nombres) { const li = document.createElement("li"); li.textContent = t; $("lista").appendChild(li); }
@@ -327,7 +331,7 @@ btnFoto.onclick = async () => {
     let nombre;
     if (dir) {
       const hechas = await fotosEn(dir);
-      nombre = LP + "-" + ((hechas.length ? hechas[hechas.length - 1][0] : 0) + 1) + ".jpg";
+      nombre = nombreFoto((hechas.length ? hechas[hechas.length - 1][0] : 0) + 1);
       const h = await dir.getFileHandle(nombre, { create: true });
       const w = await h.createWritable();
       await w.write(blob); await w.close();
@@ -336,7 +340,7 @@ btnFoto.onclick = async () => {
     } else {
       const n = +(localStorage.getItem(claveContador()) || 0) + 1;
       localStorage.setItem(claveContador(), n);
-      nombre = LP + "-" + n + ".jpg";
+      nombre = nombreFoto(n);
       descargar(blob, nombre);
       avisar(puedeCarpeta && dir === undefined
         ? "La carpeta «" + CARPETA + "» no está dentro de «" + raiz.name + "» ni ha llegado en 2 minutos. Se ha descargado " + nombre + ": arrástrala a esa carpeta en OneDrive, o elige la carpeta raíz correcta."
@@ -379,7 +383,8 @@ function degradados(buffer, nombresFotos) {
     if (!lps.has(lp) || PESO[t] > PESO[lps.get(lp)]) lps.set(lp, t);
   }
   const fotos = {};
-  for (const n of nombresFotos) { const m = n.match(/^(\d+)-\d+\.jpe?g$/i); if (m) fotos[m[1]] = (fotos[m[1]] || 0) + 1; }
+  // "ITRN-000100576-105812755-2.jpg" o "105812755-2.jpg": el LP es el numero largo antes del ultimo
+  for (const n of nombresFotos) { const m = n.match(/(?:^|-)(\d{6,})-\d+\.jpe?g$/i); if (m) fotos[m[1]] = (fotos[m[1]] || 0) + 1; }
   return [...lps].map(([lp, t]) => [lp, t, fotos[lp] || 0]);
 }
 
