@@ -62,8 +62,8 @@
     <div class="barra" style="margin-top:0">
       <button id="carpeta">Elegir carpeta de OneDrive</button>
     </div>
-    <p class="gris">Elige una vez la carpeta compartida donde están las carpetas de los ITRN
-      (o la del propio ITRN). Este PC la recuerda.</p>
+    <p class="gris">Solo la primera vez en este PC: elige la carpeta raíz de OneDrive (la que contiene
+      los años) y pulsa «Permitir en cada visita». La carpeta de cada camión se busca sola.</p>
     <h2 style="margin-top:18px">Fotos de este LP</h2>
     <ul id="lista"><li class="gris">Ninguna todavía</li></ul>
     <img id="ultima" class="mini" alt="Última foto">
@@ -123,7 +123,7 @@ async function bdSet(k, v) {
   return new Promise((ok) => { const t = d.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = ok; t.onerror = ok; });
 }
 
-const puedeCarpeta = "showDirectoryPicker" in window && !FORZAR_DESCARGA;
+let puedeCarpeta = "showDirectoryPicker" in window && !FORZAR_DESCARGA;
 
 async function permiso(h, pedir) {
   const o = { mode: "readwrite" };
@@ -131,12 +131,60 @@ async function permiso(h, pedir) {
   return pedir && (await h.requestPermission(o)) === "granted";
 }
 
-// carpeta del ITRN: la elegida, si ya es esa; si no, su subcarpeta con ese nombre
+// Carpeta del ITRN dentro de la raiz elegida: puede ser la propia raiz, una hija o
+// estar mas abajo (año › mes › dia › ITRN). Se busca por niveles empezando por lo mas
+// reciente y se recuerda la ruta encontrada. undefined = no esta (aun) en este PC.
+const PROFUNDIDAD = 5, MAX_CARPETAS = 5000;
+const igual = (a, b) => a.toLowerCase() === b.toLowerCase();
+
+async function porRuta(base, ruta) {
+  let d = base;
+  for (const n of ruta) d = await d.getDirectoryHandle(n);
+  return d;
+}
+
+async function buscarCarpeta(base, nombre) {
+  let nivel = [[base, []]], vistas = 0;
+  for (let p = 0; p < PROFUNDIDAD && nivel.length; p++) {
+    const siguiente = [];
+    for (const [d, ruta] of nivel) {
+      const hijas = [];
+      for await (const [n, h] of d.entries()) if (h.kind === "directory") hijas.push([n, h]);
+      // lo mas reciente primero: 2026 antes que 2025, 12 antes que 11
+      hijas.sort((a, b) => b[0].localeCompare(a[0], "es", { numeric: true }));
+      for (const [n, h] of hijas) {
+        if (igual(n, nombre)) return [h, ruta.concat(n)];
+        if (++vistas > MAX_CARPETAS) return null;
+        siguiente.push([h, ruta.concat(n)]);
+      }
+    }
+    nivel = siguiente;
+  }
+  return null;
+}
+
 async function carpetaITRN(pedir) {
   if (!raiz || !(await permiso(raiz, pedir))) return null;
-  if (raiz.name.toLowerCase() === CARPETA.toLowerCase()) return raiz;
-  try { return await raiz.getDirectoryHandle(CARPETA); }
-  catch (e) { return undefined; }            // la elegida no contiene la del ITRN
+  if (igual(raiz.name, CARPETA)) return raiz;
+  const clave = "ruta|" + CARPETA;
+  const recordada = await bdGet(clave).catch(() => null);
+  if (recordada) { try { return await porRuta(raiz, recordada); } catch (e) { /* se movio: buscar otra vez */ } }
+  const hallada = await buscarCarpeta(raiz, CARPETA);
+  if (!hallada) return undefined;
+  await bdSet(clave, hallada[1]);
+  return hallada[0];
+}
+
+// Si la carpeta del camion aun no ha llegado por OneDrive, se espera: reintento cada
+// 5 s durante 2 minutos.
+async function esperarCarpeta() {
+  for (let i = 0; i < 24; i++) {
+    avisar("Buscando la carpeta «" + CARPETA + "»: aún no está en este PC (OneDrive la está bajando). Esperando… (" + (i * 5) + " s)", "info");
+    await new Promise((ok) => setTimeout(ok, 5000));
+    const d = await carpetaITRN(false);
+    if (d) return d;
+  }
+  return undefined;
 }
 
 async function pintarDestino() {
@@ -147,7 +195,8 @@ async function pintarDestino() {
   }
   if (!raiz) { $("destino").textContent = "Sin carpeta elegida: pulsa «Elegir carpeta de OneDrive»."; return; }
   const ok = await permiso(raiz, false);
-  $("destino").textContent = raiz.name + (raiz.name.toLowerCase() === CARPETA.toLowerCase() ? "" : " › " + CARPETA) +
+  const ruta = await bdGet("ruta|" + CARPETA).catch(() => null);
+  $("destino").textContent = raiz.name + " › " + (ruta ? ruta.join(" › ") : "… › " + CARPETA) +
                              (ok ? "" : "  (se pedirá permiso al hacer la foto)");
 }
 
@@ -273,7 +322,8 @@ btnFoto.onclick = async () => {
   try {
     const blob = await capturar();
     $("ultima").src = URL.createObjectURL(blob); $("ultima").style.display = "block";
-    const dir = puedeCarpeta ? await carpetaITRN(true) : null;
+    let dir = puedeCarpeta ? await carpetaITRN(true) : null;
+    if (dir === undefined) dir = await esperarCarpeta();
     let nombre;
     if (dir) {
       const hechas = await fotosEn(dir);
@@ -281,14 +331,15 @@ btnFoto.onclick = async () => {
       const h = await dir.getFileHandle(nombre, { create: true });
       const w = await h.createWritable();
       await w.write(blob); await w.close();
-      avisar("Guardada " + nombre + " en " + dir.name + ". OneDrive la subirá sola.", "ok");
+      descargar(blob, nombre);                 // copia en Descargas de este PC
+      avisar("Guardada " + nombre + " en " + dir.name + " (OneDrive la subirá sola) y copia en Descargas.", "ok");
     } else {
       const n = +(localStorage.getItem(claveContador()) || 0) + 1;
       localStorage.setItem(claveContador(), n);
       nombre = LP + "-" + n + ".jpg";
       descargar(blob, nombre);
       avisar(puedeCarpeta && dir === undefined
-        ? "No encuentro la carpeta «" + CARPETA + "». Se ha descargado " + nombre + ": arrástrala a esa carpeta en OneDrive, o elige la carpeta correcta."
+        ? "La carpeta «" + CARPETA + "» no está dentro de «" + raiz.name + "» ni ha llegado en 2 minutos. Se ha descargado " + nombre + ": arrástrala a esa carpeta en OneDrive, o elige la carpeta raíz correcta."
         : "Descargada " + nombre + ". Arrástrala a la carpeta «" + CARPETA + "» en OneDrive.", dir === undefined ? "mal" : "info");
     }
     window.ultimaFoto = { nombre, bytes: blob.size };
@@ -386,6 +437,24 @@ $("verResumen").onclick = async () => {
     if (!LP || !CARPETA) btnFoto.disabled = true;
     else if (!$("aviso").textContent) avisar("", "");
     document.title = "LISTO " + cams.length + " camara(s) " + (ajustes.width || 0) + "x" + (ajustes.height || 0);
+    if (q.get("prueba") === "carpetas") {
+      const opfs = await navigator.storage.getDirectory();
+      for await (const [n] of opfs.entries()) await opfs.removeEntry(n, { recursive: true });
+      for (const [a, m, d] of [["2025", "12", "30"], ["2026", "10", "31"], ["2026", "11", "04"], ["2026", "11", "05"]]) {
+        const dd = await (await (await opfs.getDirectoryHandle(a, { create: true })).getDirectoryHandle(m, { create: true })).getDirectoryHandle(d, { create: true });
+        await dd.getDirectoryHandle("ITRN-00000" + d + " PT OTRO", { create: true });
+      }
+      const itrn = await (await porRuta(opfs, ["2026", "11", "04"])).getDirectoryHandle(CARPETA, { create: true });
+      await (await (await itrn.getFileHandle(LP + "-1.jpg", { create: true })).createWritable()).close();
+      raiz = opfs;
+      puedeCarpeta = true;
+      const t0 = performance.now();
+      await btnFoto.onclick();
+      const ruta = await bdGet("ruta|" + CARPETA);
+      const dentro = []; for await (const [n] of itrn.entries()) dentro.push(n);
+      document.title = "CARPETAS ruta=" + (ruta || []).join("/") + " | en carpeta: " + dentro.sort().join(",") +
+                       " | " + Math.round(performance.now() - t0) + " ms | " + $("aviso").textContent;
+    }
     if (q.get("prueba") === "resumen") {
       await cargarSheetJS();
       const sin = pintarResumen(degradados(await (await fetch("informe.xlsx")).arrayBuffer(), ["105812755-1.jpg", "105812755-2.jpg"]));
